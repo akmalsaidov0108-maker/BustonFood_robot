@@ -162,7 +162,21 @@ async def back(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"BustonFood bot ishlayapti!")
+    def log_message(self, format, *args):
+        pass
+
+def run_server():
+    HTTPServer(('0.0.0.0', 8080), Handler).serve_forever()
+
+threading.Thread(target=run_server, daemon=True).start()
 def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
