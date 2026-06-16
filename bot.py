@@ -3,38 +3,54 @@ import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from supabase import create_client, Client
 
 TOKEN = os.environ.get("TOKEN", "YOUR_TOKEN")
-ADMIN_ID = 123456789
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://lekdzqlbpmukuzfjjwlv.supabase.co")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "YOUR_SUPABASE_KEY")
 
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+ADMIN_ID = 123456789
 OWNER_PHONE = "+998930352203"
 PARTNER_PHONE = "+998946373090"
 
-# Menyu: kategoriya -> [(mahsulot nomi, narx matni), ...]
-MENU = {
-    "🌯 Lavash & Hotdog": [
-        ("Lavash", "25,000 - 40,000 so'm (turiga qarab)"),
-        ("Hotdog", "15,000 - 40,000 so'm (turiga qarab)"),
-    ],
-    "🥤 Ichimliklar": [
-        ("Chalop", "5,000 so'mdan"),
-        ("Boshqa ichimliklar", "narxi qo'ng'iroqda aytiladi"),
-    ],
-    "🍦 Muzqaymoq & Marjon": [
-        ("Muzqaymoq", "5,000 so'mdan boshlanadi"),
-        ("Marjon va boshqa turlari", "narxi qo'ng'iroqda aytiladi"),
-    ],
-    "🍿 Qo'shimcha mahsulotlar": [
-        ("Suxariklar va boshqalar", "narxi qo'ng'iroqda aytiladi"),
-    ],
-}
-
-user_reviews = {}
 user_states = {}
+
+# ===================== MENYUNI YUKLASH =====================
+def get_menu():
+    try:
+        res = supabase.table("menu").select("*").eq("available", True).execute()
+        menu = {}
+        for item in res.data:
+            cat = item["category"]
+            if cat not in menu:
+                menu[cat] = []
+            menu[cat].append((item["name"], item["price"], item["id"]))
+        return menu
+    except:
+        return {
+            "🌯 Lavash & Hotdog": [("Lavash", "25,000 - 40,000 so'm", 1), ("Hotdog", "15,000 - 40,000 so'm", 2)],
+            "🥤 Ichimliklar": [("Chalop", "5,000 so'mdan", 3)],
+            "🍦 Muzqaymoq & Marjon": [("Muzqaymoq", "5,000 so'mdan", 5)],
+            "🍿 Qo'shimcha mahsulotlar": [("Suxariklar", "Qo'ng'iroqda", 7)],
+        }
+
+# ===================== FOYDALANUVCHINI SAQLASH =====================
+async def save_user(user):
+    try:
+        supabase.table("users").upsert({
+            "id": user.id,
+            "first_name": user.first_name,
+            "username": user.username or ""
+        }).execute()
+    except:
+        pass
 
 # ===================== BOSH SAHIFA =====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    await save_user(user)
     keyboard = [
         [InlineKeyboardButton("🛍️ Mahsulotlar", callback_data="products"),
          InlineKeyboardButton("🎯 Aksiyalar", callback_data="sales")],
@@ -64,8 +80,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    menu = get_menu()
     keyboard = []
-    for cat in MENU:
+    for cat in menu:
         keyboard.append([InlineKeyboardButton(cat, callback_data=f"cat_{cat}")])
     keyboard.append([InlineKeyboardButton("🏠 Bosh sahifa", callback_data="home")])
     await query.edit_message_text(
@@ -73,14 +90,16 @@ async def show_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-# ===================== MAHSULOTLAR / NARXLAR =====================
+# ===================== MAHSULOTLAR =====================
 async def show_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     category = query.data.replace("cat_", "")
+    menu = get_menu()
     text = f"{category}\n\n"
-    for name, price_text in MENU[category]:
-        text += f"▸ {name} — {price_text}\n"
+    if category in menu:
+        for name, price_text, _ in menu[category]:
+            text += f"▸ {name} — {price_text}\n"
     text += "\nBuyurtma berish uchun pastdagi tugmani bosing."
     keyboard = [
         [InlineKeyboardButton("📞 Zakaz berish", callback_data="order_contact")],
@@ -89,16 +108,13 @@ async def show_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
-# ===================== ZAKAZ BERISH (telefon darhol chiqadi) =====================
+# ===================== ZAKAZ BERISH =====================
 async def order_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-
-    # Tugma bosilgan zahoti telefon raqam popup oynada chiqadi
     await query.answer(
         f"Buyurtma uchun qo'ng'iroq qiling:\n{OWNER_PHONE}",
         show_alert=True
     )
-
     text = (
         "📞 Buyurtma berish uchun qo'ng'iroq qiling:\n"
         f"{OWNER_PHONE}\n\n"
@@ -133,15 +149,19 @@ async def show_reviews(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     text = "⭐ Mijozlar izohi\n\n"
-    if not user_reviews:
-        text += "Hali izoh yo'q.\nBirinchi bo'lib izoh qoldiring."
-    else:
-        for review in list(user_reviews.values())[-5:]:
-            text += (
-                f"{'⭐' * review['rating']}\n"
-                f"👤 {review['name']}\n"
-                f"💬 {review['text']}\n\n"
-            )
+    try:
+        res = supabase.table("reviews").select("*").order("created_at", desc=True).limit(5).execute()
+        if not res.data:
+            text += "Hali izoh yo'q.\nBirinchi bo'lib izoh qoldiring."
+        else:
+            for review in res.data:
+                text += (
+                    f"{'⭐' * review['rating']}\n"
+                    f"👤 {review['user_name']}\n"
+                    f"💬 {review['text']}\n\n"
+                )
+    except:
+        text += "Izohlarni yuklashda xatolik."
     keyboard = [
         [InlineKeyboardButton("✍️ Izoh qoldirish", callback_data="add_review")],
         [InlineKeyboardButton("🏠 Bosh sahifa", callback_data="home")]
@@ -178,14 +198,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     state = user_states.get(user_id)
     if isinstance(state, dict) and state.get("action") == "waiting_review_text":
-        user_reviews[user_id] = {
-            "name": update.effective_user.first_name,
-            "rating": state["rating"],
-            "text": update.message.text
-        }
+        try:
+            supabase.table("reviews").insert({
+                "user_id": user_id,
+                "user_name": update.effective_user.first_name,
+                "rating": state["rating"],
+                "text": update.message.text
+            }).execute()
+        except:
+            pass
         user_states[user_id] = None
         await update.message.reply_text(
-            "Izohingiz qabul qilindi.\n\n"
+            "Izohingiz qabul qilindi va saqlandi! ✅\n\n"
             f"{'⭐' * state['rating']}\n"
             f"💬 {update.message.text}\n\n"
             "Rahmat!",
@@ -194,7 +218,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
 
-# ===================== HAMKORLIK (telefon darhol chiqadi) =====================
+# ===================== HAMKORLIK =====================
 async def partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer(
@@ -207,9 +231,7 @@ async def partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👤 Saidov Og'abek\n"
         f"📞 {PARTNER_PHONE}"
     )
-    keyboard = [
-        [InlineKeyboardButton("🏠 Bosh sahifa", callback_data="home")]
-    ]
+    keyboard = [[InlineKeyboardButton("🏠 Bosh sahifa", callback_data="home")]]
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 # ===================== HAQIMIZDA =====================
@@ -263,7 +285,7 @@ def main():
     app.add_handler(CallbackQueryHandler(about, pattern="^about$"))
     app.add_handler(CallbackQueryHandler(start, pattern="^home$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("BustonFood bot ishga tushdi")
+    print("BustonFood bot ishga tushdi ✅")
     app.run_polling()
 
 if __name__ == "__main__":
